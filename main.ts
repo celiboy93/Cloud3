@@ -208,7 +208,7 @@ Deno.serve(async (req: Request) => {
             },
             // 🔥 UPDATED SETTINGS: 30MB Part Size, 4 Concurrent 🔥
             queueSize: 4, 
-            partSize: 30 * 1024 * 1024 
+            partSize: 50 * 1024 * 1024 
           });
           upload.on("httpUploadProgress", p => { if(total) push({progress:Math.round((p.loaded!/total)*100)}) });
           await upload.done();
