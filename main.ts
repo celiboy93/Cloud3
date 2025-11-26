@@ -43,15 +43,13 @@ function sanitize(n: string|null): string|null {
 Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
 
-  // 🔥 FIX 1: AUTHENTICATION CHECK 🔥
-  // Only verify password if NOT accessing a download link
+  // Auth Check (Skip for downloads)
   if (!url.pathname.startsWith("/download/")) {
       if (BASIC_AUTH_USER && BASIC_AUTH_PASS) {
         const auth = req.headers.get("Authorization");
         if (auth) {
           const [u, p] = new TextDecoder().decode(Uint8Array.from(atob(auth.split(" ")[1]), c=>c.charCodeAt(0))).split(":");
           const enc = new TextEncoder();
-          // Verify credentials
           if (!(timingSafeEqual(enc.encode(u), enc.encode(BASIC_AUTH_USER)) && timingSafeEqual(enc.encode(p), enc.encode(BASIC_AUTH_PASS)))) {
              return new Response("Unauthorized", {status:401, headers:{'WWW-Authenticate':'Basic realm="Restricted"'}});
           }
@@ -81,9 +79,11 @@ Deno.serve(async (req: Request) => {
       .progress-track {height:8px; background:#0f172a; border-radius:4px; overflow:hidden;}
       .progress-fill {height:100%; width:0%; background: linear-gradient(90deg, var(--accent), #a855f7); transition: width 0.3s ease-out;}
       #progPct {text-align:right; font-size:0.8rem; color:#94a3b8; display:block; margin-bottom:5px;}
-      .link-group {display:flex; margin-top:10px;}
-      .link-group input {margin-bottom:0; border-radius:8px 0 0 8px; font-family:monospace; color:#60a5fa;}
+      .link-group {display:flex; margin-top:10px; flex-direction: column;}
+      .link-row {display:flex; margin-bottom:5px;}
+      .link-row input {margin-bottom:0; border-radius:8px 0 0 8px; font-family:monospace; color:#60a5fa; flex:1;}
       .copy-btn {background:var(--border); color:white; border:none; padding:0 15px; border-radius:0 8px 8px 0; cursor:pointer;}
+      .lbl {font-size:0.7rem; color:#64748b; margin-bottom:2px;}
     </style></head><body>
     <div class="box">
       <div class="head"><h2>R2 Uploader</h2><a href="/history">History</a></div>
@@ -135,7 +135,17 @@ Deno.serve(async (req: Request) => {
       };
 
       function copyTxt(btn,t){navigator.clipboard.writeText(t).then(()=>{btn.innerText='✓';setTimeout(()=>btn.innerText='Copy',1000)})}
-      function show(d){document.getElementById('res').innerHTML=\`<div class="link-group"><input readonly value="\${d.appLink}"><button class="copy-btn" onclick="copyTxt(this,'\${d.appLink}')">Copy</button></div><div style="color:#64748b;font-size:0.8rem;margin-top:5px">* Direct R2 Redirect (No Password Required)</div>\`;}
+      function show(d){
+          document.getElementById('res').innerHTML=\`
+          <div class="link-group">
+            <div class="lbl">App Link (3hr Redirect)</div>
+            <div class="link-row"><input readonly value="\${d.appLink}"><button class="copy-btn" onclick="copyTxt(this,'\${d.appLink}')">Copy</button></div>
+          </div>
+          <div class="link-group" style="margin-top:10px">
+            <div class="lbl">R2 Direct Link (Permanent)</div>
+            <div class="link-row"><input readonly value="\${d.r2Url}"><button class="copy-btn" onclick="copyTxt(this,'\${d.r2Url}')">Copy</button></div>
+          </div>\`;
+      }
     </script></body></html>`, {headers:{"content-type":"text/html"}});
   }
 
@@ -156,18 +166,20 @@ Deno.serve(async (req: Request) => {
             Key: fileName, 
             Body: file.stream(), 
             ContentType: file.type,
-            // 🔥 FIX 2: OPTIMIZED SPEED 🔥
             ContentDisposition: `attachment; filename="${fileName}"`,
             CacheControl: "public, max-age=31536000, immutable"
         },
-        queueSize: 8, partSize: 20 * 1024 * 1024 // Increased to 20MB for faster large file uploads
+        // 🔥 UPDATED SETTINGS: 30MB Part Size, 4 Concurrent 🔥
+        queueSize: 4, 
+        partSize: 30 * 1024 * 1024 
       });
       await upload.done();
 
       const appLink = `https://${url.host}/download/${fileName}`;
-      const data = { id: crypto.randomUUID(), fileName, appLink, createdAt: new Date(), source: "File" };
+      const r2Url = `https://${R2_PUBLIC_URL}/${fileName}`;
+      const data = { id: crypto.randomUUID(), fileName, appLink, r2Url, createdAt: new Date(), source: "File" };
       await kv.set(["uploads", MAX_DATE_MS - Date.now(), data.id], data);
-      return Response.json({appLink});
+      return Response.json({appLink, r2Url});
     } catch (e) { return Response.json({error:e.message},{status:500}); }
   }
 
@@ -191,19 +203,21 @@ Deno.serve(async (req: Request) => {
                 Key: fileName, 
                 Body: r.body as any, 
                 ContentType: r.headers.get("content-type")||"application/octet-stream",
-                // 🔥 FIX 2: OPTIMIZED SPEED 🔥
                 ContentDisposition: `attachment; filename="${fileName}"`,
                 CacheControl: "public, max-age=31536000, immutable"
             },
-            queueSize: 4, partSize: 30 * 1024 * 1024 // Increased to 50MB
+            // 🔥 UPDATED SETTINGS: 30MB Part Size, 4 Concurrent 🔥
+            queueSize: 4, 
+            partSize: 30 * 1024 * 1024 
           });
           upload.on("httpUploadProgress", p => { if(total) push({progress:Math.round((p.loaded!/total)*100)}) });
           await upload.done();
 
           const appLink = `https://${url.host}/download/${fileName}`;
-          const data = { id: crypto.randomUUID(), fileName, appLink, createdAt: new Date(), source: "URL" };
+          const r2Url = `https://${R2_PUBLIC_URL}/${fileName}`;
+          const data = { id: crypto.randomUUID(), fileName, appLink, r2Url, createdAt: new Date(), source: "URL" };
           await kv.set(["uploads", MAX_DATE_MS - Date.now(), data.id], data);
-          push({done:{appLink}});
+          push({done:{appLink, r2Url}});
         } catch (e) { push({error:e.message}); }
         controller.close();
       }
@@ -211,8 +225,7 @@ Deno.serve(async (req: Request) => {
     return new Response(body, { headers: { "Content-Type": "application/x-ndjson" } });
   }
 
-  // --- ROUTE 4: PUBLIC DOWNLOAD (REDIRECT) ---
-  // This route is now explicitly PUBLIC (No Password)
+  // --- ROUTE 4: PUBLIC DOWNLOAD (REDIRECT with 3 Hour Expiry) ---
   if (req.method === "GET" && url.pathname.startsWith("/download/")) {
     const key = url.pathname.substring(10); 
     
@@ -224,6 +237,7 @@ Deno.serve(async (req: Request) => {
             ResponseCacheControl: "public, max-age=31536000"
         });
         
+        // Expires in 3 Hours (10800 seconds)
         const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 10800 });
         return Response.redirect(signedUrl, 302);
     } catch (e) {
@@ -238,9 +252,21 @@ Deno.serve(async (req: Request) => {
     for await (const e of iter) {
       const v = e.value as any;
       const k = JSON.stringify(e.key);
-      items += `<div class="item"><div class="top"><b>${v.fileName}</b><button onclick='del(${k})'>Del</button></div><div class="meta">${formatTimeAgo(new Date(v.createdAt))}</div><div class="link-group"><input readonly value="${v.appLink}"><button class="copy-btn" onclick="copyTxt(this,'${v.appLink}')">Copy</button></div></div>`;
+      items += `
+      <div class="item">
+        <div class="top"><b>${v.fileName}</b><button onclick='del(${k})'>Del</button></div>
+        <div class="meta">${formatTimeAgo(new Date(v.createdAt))}</div>
+        <div class="link-group">
+            <div class="lbl">App Link</div>
+            <div class="link-row"><input readonly value="${v.appLink}"><button class="copy-btn" onclick="copyTxt(this,'${v.appLink}')">Copy</button></div>
+        </div>
+        <div class="link-group" style="margin-top:5px">
+            <div class="lbl">R2 Direct</div>
+            <div class="link-row"><input readonly value="${v.r2Url}"><button class="copy-btn" onclick="copyTxt(this,'${v.r2Url}')">Copy</button></div>
+        </div>
+      </div>`;
     }
-    return new Response(`<!DOCTYPE html><html><head><title>History</title><meta name="viewport" content="width=device-width"><style>body{background:#0f172a;color:#fff;font-family:sans-serif;padding:1rem;max-width:600px;margin:0 auto}.item{background:#1e293b;padding:1rem;margin-bottom:10px;border-radius:8px}.link-group{display:flex;margin-top:5px}input{background:#0f172a;border:none;color:#60a5fa;flex:1;padding:5px}button{background:#334155;color:#fff;border:none;padding:5px 10px;cursor:pointer}</style><script>async function del(k){if(confirm('Delete?'))await fetch('/api/delete-history',{method:'POST',body:JSON.stringify({key:k})});location.reload()} function copyTxt(b,t){navigator.clipboard.writeText(t);b.innerText='✓'}</script></head><body><h2>History</h2><a href="/" style="color:#60a5fa">Back</a><br><br>${items}</body></html>`,{headers:{"content-type":"text/html"}});
+    return new Response(`<!DOCTYPE html><html><head><title>History</title><meta name="viewport" content="width=device-width"><style>body{background:#0f172a;color:#fff;font-family:sans-serif;padding:1rem;max-width:600px;margin:0 auto}.item{background:#1e293b;padding:1rem;margin-bottom:10px;border-radius:8px}.link-group{display:flex;flex-direction:column}.link-row{display:flex;margin-top:2px}input{background:#0f172a;border:none;color:#60a5fa;flex:1;padding:5px;border-radius:4px 0 0 4px}button{background:#334155;color:#fff;border:none;padding:5px 10px;cursor:pointer}.lbl{font-size:0.7rem;color:#64748b}.copy-btn{border-radius:0 4px 4px 0}</style><script>async function del(k){if(confirm('Delete?'))await fetch('/api/delete-history',{method:'POST',body:JSON.stringify({key:k})});location.reload()} function copyTxt(b,t){navigator.clipboard.writeText(t);b.innerText='✓';setTimeout(()=>b.innerText='Copy',1000)}</script></head><body><h2>History</h2><a href="/" style="color:#60a5fa">Back</a><br><br>${items}</body></html>`,{headers:{"content-type":"text/html"}});
   }
 
   // --- ROUTE 6: DELETE API ---
