@@ -43,13 +43,15 @@ function sanitize(n: string|null): string|null {
 Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
 
-  // Auth Check (Skip for downloads)
+  // 🔥 FIX 1: AUTHENTICATION CHECK 🔥
+  // Only verify password if NOT accessing a download link
   if (!url.pathname.startsWith("/download/")) {
       if (BASIC_AUTH_USER && BASIC_AUTH_PASS) {
         const auth = req.headers.get("Authorization");
         if (auth) {
           const [u, p] = new TextDecoder().decode(Uint8Array.from(atob(auth.split(" ")[1]), c=>c.charCodeAt(0))).split(":");
           const enc = new TextEncoder();
+          // Verify credentials
           if (!(timingSafeEqual(enc.encode(u), enc.encode(BASIC_AUTH_USER)) && timingSafeEqual(enc.encode(p), enc.encode(BASIC_AUTH_PASS)))) {
              return new Response("Unauthorized", {status:401, headers:{'WWW-Authenticate':'Basic realm="Restricted"'}});
           }
@@ -133,7 +135,7 @@ Deno.serve(async (req: Request) => {
       };
 
       function copyTxt(btn,t){navigator.clipboard.writeText(t).then(()=>{btn.innerText='✓';setTimeout(()=>btn.innerText='Copy',1000)})}
-      function show(d){document.getElementById('res').innerHTML=\`<div class="link-group"><input readonly value="\${d.appLink}"><button class="copy-btn" onclick="copyTxt(this,'\${d.appLink}')">Copy</button></div><div style="color:#64748b;font-size:0.8rem;margin-top:5px">* App Link (Redirects to R2 - 3Hrs)</div>\`;}
+      function show(d){document.getElementById('res').innerHTML=\`<div class="link-group"><input readonly value="\${d.appLink}"><button class="copy-btn" onclick="copyTxt(this,'\${d.appLink}')">Copy</button></div><div style="color:#64748b;font-size:0.8rem;margin-top:5px">* Direct R2 Redirect (No Password Required)</div>\`;}
     </script></body></html>`, {headers:{"content-type":"text/html"}});
   }
 
@@ -154,11 +156,11 @@ Deno.serve(async (req: Request) => {
             Key: fileName, 
             Body: file.stream(), 
             ContentType: file.type,
-            // 🔥 REMOVED "attachment" -> Now behaves like a stream (better for Apps)
+            // 🔥 FIX 2: OPTIMIZED SPEED 🔥
+            ContentDisposition: `attachment; filename="${fileName}"`,
             CacheControl: "public, max-age=31536000, immutable"
         },
-        queueSize: 4, 
-        partSize: 30 * 1024 * 1024 
+        queueSize: 8, partSize: 20 * 1024 * 1024 // Increased to 20MB for faster large file uploads
       });
       await upload.done();
 
@@ -189,11 +191,11 @@ Deno.serve(async (req: Request) => {
                 Key: fileName, 
                 Body: r.body as any, 
                 ContentType: r.headers.get("content-type")||"application/octet-stream",
-                // 🔥 REMOVED "attachment" -> Better for Apps
+                // 🔥 FIX 2: OPTIMIZED SPEED 🔥
+                ContentDisposition: `attachment; filename="${fileName}"`,
                 CacheControl: "public, max-age=31536000, immutable"
             },
-            queueSize: 4, 
-            partSize: 30 * 1024 * 1024 
+            queueSize: 4, partSize: 30 * 1024 * 1024 // Increased to 50MB
           });
           upload.on("httpUploadProgress", p => { if(total) push({progress:Math.round((p.loaded!/total)*100)}) });
           await upload.done();
@@ -209,28 +211,19 @@ Deno.serve(async (req: Request) => {
     return new Response(body, { headers: { "Content-Type": "application/x-ndjson" } });
   }
 
-  // --- ROUTE 4: PUBLIC DOWNLOAD (REDIRECT with 3 Hour Expiry) ---
+  // --- ROUTE 4: PUBLIC DOWNLOAD (REDIRECT) ---
+  // This route is now explicitly PUBLIC (No Password)
   if (req.method === "GET" && url.pathname.startsWith("/download/")) {
     const key = url.pathname.substring(10); 
-    const mode = url.searchParams.get("mode"); // ?mode=dl to force download
     
     try {
-        // Default: INLINE (Good for Streaming/Apps)
-        let disposition = `inline; filename="${key}"`;
-        
-        // If user explicitly wants to force download (e.g. for browser)
-        if (mode === "dl") {
-            disposition = `attachment; filename="${key}"`;
-        }
-
         const command = new GetObjectCommand({
             Bucket: R2_BUCKET_NAME,
             Key: key,
-            ResponseContentDisposition: disposition, // 🔥 Changed to Dynamic/Inline
+            ResponseContentDisposition: `attachment; filename="${key}"`,
             ResponseCacheControl: "public, max-age=31536000"
         });
         
-        // Expires in 3 Hours (10800 seconds)
         const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 10800 });
         return Response.redirect(signedUrl, 302);
     } catch (e) {
